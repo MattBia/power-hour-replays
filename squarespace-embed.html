@@ -1,0 +1,73 @@
+<!-- Power Hour Replays - auto-updated from GitHub -->
+<!-- Paste this into a Code Block on the /ph-replays page. -->
+<!-- IMPORTANT: replace YOUR_USERNAME/YOUR_REPO below with the real repo path. -->
+
+<div id="ph-replays">
+  <p id="ph-loading">Loading replays…</p>
+</div>
+
+<style>
+  #ph-replays .ph-month {
+    font-weight: bold;
+    margin: 1.6em 0 0.4em;
+    font-size: 1.05em;
+  }
+  #ph-replays .ph-link {
+    display: block;
+    margin: 0.35em 0;
+    text-decoration: underline;
+  }
+</style>
+
+<script>
+(function () {
+  var REPO = "MattBia/power-hour-replays"; // raw.githubusercontent.com/<REPO>/main/replays.json
+  var URL = "https://raw.githubusercontent.com/" + REPO + "/main/replays.json?v=" + Date.now();
+
+  var MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+
+  fetch(URL, { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (data) {
+      var replays = data.replays.slice().sort(function (a, b) {
+        return a.date < b.date ? 1 : -1; // newest first
+      });
+
+      var container = document.getElementById("ph-replays");
+      container.innerHTML = "";
+
+      var currentGroup = "";
+      replays.forEach(function (r) {
+        // Parse as plain date parts to avoid timezone shifting
+        var parts = r.date.split("-"); // YYYY-MM-DD
+        var year = parts[0], monthIdx = parseInt(parts[1], 10) - 1, day = parseInt(parts[2], 10);
+        var groupKey = year + "-" + parts[1];
+
+        if (groupKey !== currentGroup) {
+          currentGroup = groupKey;
+          var h = document.createElement("div");
+          h.className = "ph-month";
+          h.textContent = MONTHS[monthIdx] + " " + year;
+          container.appendChild(h);
+        }
+
+        var a = document.createElement("a");
+        a.className = "ph-link";
+        a.href = r.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = (monthIdx + 1) + "/" + day + "/" + year;
+        container.appendChild(a);
+      });
+    })
+    .catch(function (err) {
+      document.getElementById("ph-loading").textContent =
+        "Couldn't load replays right now. Please refresh the page.";
+      console.error("PH replays load failed:", err);
+    });
+})();
+</script>

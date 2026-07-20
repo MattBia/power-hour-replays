@@ -1,0 +1,47 @@
+name: Power Hour Replay Updater
+
+on:
+  schedule:
+    # Cron is UTC. 2:30 PM ET = 18:30 UTC (EDT) or 19:30 UTC (EST).
+    # We run several Friday slots; the script is idempotent, so extra
+    # runs are no-ops and later slots double as retries if Grain is
+    # slow to process the recording.
+    - cron: "30 18 * * 5"   # 2:30 PM EDT / 1:30 PM EST
+    - cron: "0 19 * * 5"    # 3:00 PM EDT / 2:00 PM EST
+    - cron: "30 19 * * 5"   # 3:30 PM EDT / 2:30 PM EST
+    - cron: "30 20 * * 5"   # 4:30 PM EDT / 3:30 PM EST (final attempt)
+  workflow_dispatch:        # manual run button, just in case
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Update replays.json from Grain
+        env:
+          GRAIN_API_TOKEN_V2: ${{ secrets.GRAIN_API_TOKEN_V2 }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          FINAL_ATTEMPT: ${{ github.event.schedule == '30 20 * * 5' && 'true' || 'false' }}
+        run: python scripts/update_replays.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "power-hour-bot"
+          git config user.email "actions@github.com"
+          if ! git diff --quiet replays.json; then
+            git add replays.json
+            git commit -m "Add Power Hour replay for $(date +%Y-%m-%d)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
