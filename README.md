@@ -19,17 +19,21 @@ Extra cron slots are free retries in case Grain hasn't finished processing by 2:
 
 ## Setup (one time)
 
-1. Create a repo (public is easiest — raw.githubusercontent.com fetch requires no auth)
-   and push these files
-2. Repo Settings → Secrets and variables → Actions:
+Repo, push, workflow write-permissions, and the embed's `REPO` value are already
+done — it lives at **https://github.com/MattBia/power-hour-replays** (public). Two
+steps remain, both requiring secrets only you have:
+
+1. Add the Grain token secret (repo → Settings → Secrets and variables → Actions):
    - `GRAIN_API_TOKEN_V2` — the exact same token value BIA's onboarding
-     automation uses (it reads `GRAIN_API_TOKEN_V2` too)
-   - `SLACK_WEBHOOK_URL` — optional; posts success/failure notes to Slack
-3. Repo Settings → Actions → General → Workflow permissions → "Read and write permissions"
-4. In `squarespace-embed.html`, set `REPO` to your `username/repo`, then paste the whole
-   file into a Code Block on the /ph-replays page (replacing the manual list)
-5. Test: Actions tab → "Power Hour Replay Updater" → Run workflow. On a non-Friday it
-   just won't find a recording and exits cleanly; on a Friday after 2 PM it should post
+     automation uses (it reads `GRAIN_API_TOKEN_V2` too). **Required.**
+   - `SLACK_WEBHOOK_URL` — optional; posts success/failure notes to Slack.
+2. Paste the whole `squarespace-embed.html` into a Code Block on the /ph-replays
+   page, replacing the old manual list. `REPO` is already set to
+   `MattBia/power-hour-replays`.
+
+Then test: Actions tab → "Power Hour Replay Updater" → Run workflow. On a non-Friday
+it just won't find today's recording and exits cleanly; on a Friday after ~2 PM ET it
+posts that day's replay.
 
 ## Notes / failure modes
 
