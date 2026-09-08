@@ -63,9 +63,10 @@ def notify_slack(message: str) -> None:
     if not url:
         return
     try:
-        requests.post(url, json={"text": message}, timeout=10)
-    except requests.RequestException:
-        pass  # notifications are best-effort
+        r = requests.post(url, json={"text": message}, timeout=10)
+        print(f"Slack notified ({r.status_code}).")
+    except requests.RequestException as e:
+        print(f"Slack notify failed: {e}")  # notifications are best-effort
 
 
 def load_replays() -> dict:
@@ -212,6 +213,10 @@ def main() -> int:
     if rec_date in posted:
         # Manual path: the newest recording in the window is already on the page.
         print(f"Entry for {rec_date} already exists. Nothing to do.")
+        notify_slack(
+            f":information_source: Power Hour button: the {rec_date} replay is already on "
+            "bianutrition.com/ph-replays and Grain has nothing newer. Nothing to do."
+        )
         result(f"Already posted ({rec_date}). Nothing new in Grain.")
         return 0
 
