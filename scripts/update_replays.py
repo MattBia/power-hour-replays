@@ -11,10 +11,22 @@ Env vars:
   SLACK_WEBHOOK_URL   optional - posts a note on success or final failure
   FINAL_ATTEMPT       optional - "true" on the last cron slot of the day;
                       controls whether a miss is treated as a failure
+  MANUAL              optional - "true" when triggered by hand (Stream Deck /
+                      "Run workflow"). Looks for the newest Power Hour in the
+                      last MANUAL_LOOKBACK_DAYS instead of the most recent
+                      Friday, and treats "nothing found" as a failure so the
+                      scheduled runs know they still have work to do.
+
+Scheduled runs target the most recent Friday (ET) rather than "today" because
+GitHub fires cron jobs hours late on low-traffic repos - late enough that a
+Friday-evening slot can land on Saturday UTC.
 
 Exit codes:
   0 = entry added, or already present, or not-found on a non-final attempt
-  1 = hard error, or not-found on the final attempt
+  1 = hard error, not-found on the final attempt, or not-found on a manual run
+
+The last line of output is always "RESULT: ..." so a caller (the Stream Deck
+button) can show it without parsing the whole log.
 """
 
 from __future__ import annotations
@@ -22,7 +34,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -39,6 +51,11 @@ GRAIN_HEADERS = {
 REPLAYS_PATH = Path(__file__).resolve().parent.parent / "replays.json"
 TITLE_KEYWORD = "power hour"  # case-insensitive; real title is "Coach Chelley's Power Hour"
 ET = ZoneInfo("America/New_York")
+FRIDAY = 4
+# Manual runs look back this many days (inclusive). Deliberately under a week
+# so a Thursday/Friday-morning press can never "find" last week's replay and
+# report success before this week's call has happened.
+MANUAL_LOOKBACK_DAYS = 6
 
 
 def notify_slack(message: str) -> None:
@@ -78,12 +95,17 @@ def _recording_date_et(recording: dict) -> str | None:
     return dt.astimezone(ET).strftime("%Y-%m-%d")
 
 
-def fetch_todays_power_hour(today: str) -> dict | None:
-    """Return the Grain recording dict for today's Power Hour, or None.
+def most_recent_friday(today: date) -> date:
+    """The most recent Friday on or before `today` (today itself if Friday)."""
+    return today - timedelta(days=(today.weekday() - FRIDAY) % 7)
 
-    `today` is a YYYY-MM-DD string in ET. Search is a POST with a title
-    filter (Grain v2), then we keep only recordings that (a) contain the
-    "Power Hour" keyword and (b) actually started today in ET.
+
+def fetch_power_hour(start: date, end: date) -> dict | None:
+    """Return the newest Grain Power Hour recording dated start..end (ET), or None.
+
+    Search is a POST with a title filter (Grain v2), then we keep only
+    recordings that (a) contain the "Power Hour" keyword and (b) started
+    within the window in ET. Newest wins if there are several.
     """
     resp = requests.post(
         GRAIN_RECORDINGS_URL,
@@ -94,14 +116,16 @@ def fetch_todays_power_hour(today: str) -> dict | None:
     resp.raise_for_status()
     recordings = resp.json().get("recordings", [])
 
-    matches = [
-        r for r in recordings
-        if TITLE_KEYWORD in (r.get("title") or "").lower()
-        and _recording_date_et(r) == today
-    ]
+    lo, hi = start.isoformat(), end.isoformat()
+    matches = []
+    for r in recordings:
+        if TITLE_KEYWORD not in (r.get("title") or "").lower():
+            continue
+        d = _recording_date_et(r)
+        if d and lo <= d <= hi:
+            matches.append(r)
     if not matches:
         return None
-    # If somehow multiple today, take the most recent start.
     matches.sort(key=lambda r: r.get("start_datetime") or "", reverse=True)
     return matches[0]
 
@@ -126,55 +150,91 @@ def extract_share_url(recording: dict) -> str | None:
     return candidates[0]
 
 
+def result(msg: str) -> None:
+    """Final status line; the Stream Deck button surfaces this verbatim."""
+    print(f"RESULT: {msg}")
+
+
 def main() -> int:
     now_et = datetime.now(ET)
-    today = now_et.strftime("%Y-%m-%d")
+    today = now_et.date()
     final_attempt = os.environ.get("FINAL_ATTEMPT", "").lower() == "true"
+    manual = os.environ.get("MANUAL", "").lower() == "true"
 
     data = load_replays()
+    posted = {r["date"] for r in data["replays"]}
 
-    # Idempotency: bail if today is already posted (earlier cron slot got it)
-    if any(r["date"] == today for r in data["replays"]):
-        print(f"Entry for {today} already exists. Nothing to do.")
-        return 0
+    if manual:
+        start = today - timedelta(days=MANUAL_LOOKBACK_DAYS)
+        label = f"the last {MANUAL_LOOKBACK_DAYS} days"
+    else:
+        start = most_recent_friday(today)
+        label = start.isoformat()
+        # Idempotency: bail if the target Friday is already posted (an earlier
+        # cron slot or a button press got it).
+        if label in posted:
+            print(f"Entry for {label} already exists. Nothing to do.")
+            result(f"Already posted ({label}). Nothing to do.")
+            return 0
 
     try:
-        recording = fetch_todays_power_hour(today)
+        recording = fetch_power_hour(start, today)
     except requests.RequestException as e:
         print(f"Grain API error: {e}", file=sys.stderr)
         notify_slack(f":warning: Power Hour updater hit a Grain API error: {e}")
+        result(f"Grain API error: {e}")
         return 1
 
     if recording is None:
-        msg = f"No Power Hour recording found in Grain for {today} yet."
+        msg = f"No Power Hour recording found in Grain for {label} yet."
         print(msg)
+        if manual:
+            # Fail so the scheduled runs don't stand down on our account.
+            notify_slack(
+                f":hourglass: Power Hour button pressed, but Grain has no Power Hour "
+                f"recording from {label} yet. Try again in a few minutes, or let "
+                "the scheduled Friday checks pick it up."
+            )
+            result("No new recording in Grain yet. Try again in a few minutes.")
+            return 1
         if final_attempt:
             notify_slack(
-                f":x: Power Hour replay was NOT posted for {today} - "
+                f":x: Power Hour replay was NOT posted for {label} - "
                 "no matching recording found in Grain by the last check. "
                 "Check the recording title contains 'Power Hour', or add the link manually."
             )
+            result(f"NOT posted for {label} - no recording found by the final check.")
             return 1
+        result(f"Nothing for {label} yet; a later slot will retry.")
         return 0  # a later cron slot will retry
+
+    rec_date = _recording_date_et(recording)
+    if rec_date in posted:
+        # Manual path: the newest recording in the window is already on the page.
+        print(f"Entry for {rec_date} already exists. Nothing to do.")
+        result(f"Already posted ({rec_date}). Nothing new in Grain.")
+        return 0
 
     share_url = extract_share_url(recording)
     if not share_url:
         rec_id = recording.get("id", "unknown")
         msg = (
-            f"Found recording {rec_id} for {today} but it has no public share URL. "
+            f"Found recording {rec_id} for {rec_date} but it has no public share URL. "
             "The recording likely needs sharing enabled in Grain."
         )
         print(msg, file=sys.stderr)
         notify_slack(f":x: Power Hour updater: {msg}")
+        result(f"Found {rec_date} but it has no public share link - enable sharing in Grain.")
         return 1
 
-    data["replays"].append({"date": today, "url": share_url})
+    data["replays"].append({"date": rec_date, "url": share_url})
     save_replays(data)
-    print(f"Added {today} -> {share_url}")
+    print(f"Added {rec_date} -> {share_url}")
     notify_slack(
-        f":white_check_mark: Power Hour replay for {today} posted to "
+        f":white_check_mark: Power Hour replay for {rec_date} posted to "
         "bianutrition.com/ph-replays\n{0}".format(share_url)
     )
+    result(f"Posted {rec_date} to bianutrition.com/ph-replays")
     return 0
 
 
